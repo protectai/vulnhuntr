@@ -146,7 +146,7 @@ class ChatGPT(LLM):
         # Step 3: Replace escaped double quotes with regular double quotes
         cleaned_text = cleaned_text.replace('\\"', '"')
 
-        return response.replace('\n', '')
+        return cleaned_text.replace('\n', '')
 
     def get_response(self, response: Dict[str, Any]) -> str:
         response = response.choices[0].message.content
