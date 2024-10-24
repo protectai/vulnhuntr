@@ -3,7 +3,7 @@ import re
 import argparse
 import structlog
 from vulnhuntr.symbol_finder import SymbolExtractor
-from vulnhuntr.LLMs import Claude, ChatGPT
+from vulnhuntr.LLMs import Claude, ChatGPT, Ollama,Gemini
 from vulnhuntr.prompts import *
 from rich import print
 from typing import List, Generator
@@ -300,7 +300,7 @@ def run():
     parser = argparse.ArgumentParser(description='Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY before running.')
     parser.add_argument('-r', '--root', type=str, required=True, help='Path to the root directory of the project')
     parser.add_argument('-a', '--analyze', type=str, help='Specific path or file within the project to analyze')
-    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt'], default='claude', help='LLM client to use (default: claude)')
+    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt','ollama','gemini'], default='claude', help='LLM client to use (default: claude)')
     parser.add_argument('-v', '--verbosity', action='count', default=0, help='Increase output verbosity (-v for INFO, -vv for DEBUG)')
     args = parser.parse_args()
 
@@ -328,6 +328,10 @@ def run():
         llm = Claude()
     elif args.llm == 'gpt':
         llm = ChatGPT()
+    elif args.llm == 'ollama':
+        llm = Ollama()
+    elif args.llm == 'gemini':
+        llm = Gemini()
 
     readme_content = repo.get_readme_content()
     if readme_content:
@@ -364,6 +368,10 @@ def run():
                 llm = Claude(system_prompt=system_prompt)
             elif args.llm == 'gpt':
                 llm = ChatGPT(system_prompt=system_prompt)
+            elif args.llm == 'ollama':
+                llm = Ollama(system_prompt=system_prompt)
+            elif args.llm == 'gemini':
+                llm = Gemini(system_prompt=system_prompt)
 
             user_prompt =(
                     FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
