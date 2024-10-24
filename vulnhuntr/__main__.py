@@ -391,7 +391,7 @@ def run():
                     definitions = CodeDefinitions(definitions=[])
                     same_context = False
 
-                    # Don't include the intial analysis or the first iteration of the secondary analysis in the user_prompt
+                    # Don't include the initial analysis or the first iteration of the secondary analysis in the user_prompt
                     previous_analysis = ''
                     previous_context_amount = 0
 
