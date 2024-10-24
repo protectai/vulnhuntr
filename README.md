@@ -77,7 +77,7 @@ This tool is designed to analyze a GitHub repository for potential remotely expl
 ### Command Line Interface
 
 ```
-usage: vulnhuntr.py [-h] -r ROOT [-a ANALYZE] [-l {claude,gpt}] [-v]
+usage: vulnhuntr.py [-h] -r ROOT [-a ANALYZE] [-l {claude,gpt,ollama,gemini}] [-v]
 
 Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY before running.
 
@@ -86,13 +86,13 @@ options:
   -r ROOT, --root ROOT  Path to the root directory of the project
   -a ANALYZE, --analyze ANALYZE
                         Specific path or file within the project to analyze
-  -l {claude,gpt}, --llm {claude,gpt}
+  -l {claude,gpt,ollama,gemini}, --llm {claude,gpt,ollama,gemini}
                         LLM client to use (default: claude)
   -v, --verbosity       Increase output verbosity (-v for INFO, -vv for DEBUG)
 ```
 ### Example
 
-Export your `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` before running.
+Export your `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` or `GEMINI_API_KEY` before running.
 
 Analyze the entire repository using Claude:
 
