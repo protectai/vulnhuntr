@@ -18,6 +18,7 @@ structlog = "^24.2.0"
 jedi = "0.18.0"
 parso = "0.8.0"
 openai = "^1.51.2"
+python-dotenv = "^1.0.0"
 
 [build-system]
 requires = ["poetry-core"]

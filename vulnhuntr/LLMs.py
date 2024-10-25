@@ -4,6 +4,9 @@ from pydantic import BaseModel, ValidationError
 import anthropic
 import os
 import openai
+import dotenv
+
+dotenv.load_dotenv()
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +76,7 @@ class LLM:
 class Claude(LLM):
     def __init__(self, system_prompt: str = "") -> None:
         super().__init__(system_prompt)
-        self.client = anthropic.Anthropic(max_retries=3)
+        self.client = anthropic.Anthropic(max_retries=3, base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"))
 
     def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
         if "Provide a very concise summary of the README.md content" in user_prompt:
@@ -107,7 +110,7 @@ class Claude(LLM):
 class ChatGPT(LLM):
     def __init__(self, system_prompt: str = "") -> None:
         super().__init__(system_prompt)
-        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # Retrieves API key from environment variable
+        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL", f"https://api.openai.com/v1"))  # Retrieves API key and API Endpoint if specified from an environment variable
 
     def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
         messages = [{"role": "system", "content": self.system_prompt}, {"role": "user", "content": user_prompt}]
