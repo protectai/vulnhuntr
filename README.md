@@ -78,7 +78,7 @@ This tool is designed to analyze a GitHub repository for potential remotely expl
 ### Command Line Interface
 
 ```
-usage: vulnhuntr [-h] -r ROOT [-a ANALYZE] [-l {claude,gpt,ollama}] [-v]
+usage: vulnhuntr [-h] -r ROOT [-a ANALYZE] [-l {claude,gemini,gpt,ollama}] [-v]
 
 Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY/OPENAI_API_KEY before running.
 
@@ -123,7 +123,16 @@ Ollama is included as an option, however we haven't had success with the open so
 export OLLAMA_BASE_URL=http://localhost:11434/api/generate
 export OLLAMA_MODEL=llama3.2
 vulnhuntr -r /path/to/target/repo/ -a server.py -l ollama
-``` 
+```
+
+Gemini support is also experimental.
+
+```bash
+export GEMINI_API_KEY=<your key>
+export GEMINI_MODEL=gemini-1.5-flash-002  # Optional, gemini-1.5-flash-002 is the default  
+vulnhuntr -r /path/to/target/repo/ -a server.py -l gemini
+```
+
 
 ## Logic Flow
 ![VulnHuntr logic](https://github.com/user-attachments/assets/7757b053-36ff-425e-ab3d-ab0100c81d49)
