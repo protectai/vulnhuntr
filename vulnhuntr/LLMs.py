@@ -1,11 +1,15 @@
-import logging
-from typing import List, Union, Dict, Any
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from json import dumps, loads
 from pydantic import BaseModel, ValidationError
+from typing import List, Union, Dict, Any
 import anthropic
-import os
-import openai
 import dotenv
+import google.generativeai as genai
+import logging
+import openai
+import os
 import requests
+import sys
 
 dotenv.load_dotenv()
 
@@ -188,3 +192,57 @@ class Ollama(LLM):
     def _log_response(self, response: Dict[str, Any]) -> None:
         log.debug("Received chat response", extra={"usage": "Ollama"})
 
+
+class Gemini(LLM):
+    def __init__(self, model: str, system_prompt: str = "") -> None:
+        super().__init__(system_prompt)
+        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+        kwargs = {
+            "model_name": model,
+            "generation_config": {"response_mime_type": "application/json", "temperature": 1},
+            "safety_settings": {
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE, 
+            },
+        }
+        if system_prompt:
+            self.client = genai.GenerativeModel(
+                system_instruction=system_prompt,
+                **kwargs)
+        else:
+            self.client = genai.GenerativeModel(**kwargs)
+
+        self._chat = self.client.start_chat()
+
+    def create_messages(self, user_prompt: str) -> str:
+        return user_prompt
+
+    def send_message(self, user_prompt: str, max_tokens: int, response_model: BaseModel) -> Dict[str, Any]:
+        gconfig_kwargs = { 
+            "max_output_tokens": max_tokens,
+        }
+        if response_model:
+            gconfig_kwargs["response_schema"] = response_model
+
+        # Gemini seems to get confused by the "json dump" of ResponseFormat.
+        # Moreover the genai API supports passing a response_schema
+        # (see above).
+        user_prompt = user_prompt.split("<response_format>", 1)[0]
+        
+        response = self._chat.send_message(
+            user_prompt,
+            generation_config=genai.GenerationConfig(**gconfig_kwargs)
+        )
+        response_text = response.text
+        while response_model is not None and not response_text.endswith("}\n"):
+            log.debug("Received incomplete chat response, asking more")
+            response = self._chat.send_message(text="continue")
+            response_text += response.text
+
+        return { "text": response_text }
+
+    def get_response(self, response: Dict[str, Any]) -> str:
+        return response.get("text")
+
+    def _log_response(self, response: Dict[str, Any]) -> None:
+        log.debug("Received chat response: {response}", extra={"usage": "Gemini"})

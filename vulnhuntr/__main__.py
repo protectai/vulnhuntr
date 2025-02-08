@@ -3,7 +3,7 @@ import re
 import argparse
 import structlog
 from vulnhuntr.symbol_finder import SymbolExtractor
-from vulnhuntr.LLMs import Claude, ChatGPT, Ollama
+from vulnhuntr.LLMs import Claude, ChatGPT, Gemini, Ollama
 from vulnhuntr.prompts import *
 from rich import print
 from typing import List, Generator
@@ -291,6 +291,9 @@ def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | 
         openai_model = os.getenv("OPENAI_MODEL", "chatgpt-4o-latest")
         openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         llm = ChatGPT(openai_model, openai_base_url, system_prompt)
+    elif llm_arg == 'gemini':
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-pro-002")
+        llm = Gemini(gemini_model, system_prompt)
     elif llm_arg == 'ollama':
         ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
         ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/api/generate")
@@ -321,7 +324,7 @@ def run():
     parser = argparse.ArgumentParser(description='Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY/OPENAI_API_KEY before running.')
     parser.add_argument('-r', '--root', type=str, required=True, help='Path to the root directory of the project')
     parser.add_argument('-a', '--analyze', type=str, help='Specific path or file within the project to analyze')
-    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt', 'ollama'], default='claude', help='LLM client to use (default: claude)')
+    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gemini', 'gpt', 'ollama'], default='claude', help='LLM client to use (default: claude)')
     parser.add_argument('-v', '--verbosity', action='count', default=0, help='Increase output verbosity (-v for INFO, -vv for DEBUG)')
     args = parser.parse_args()
 
@@ -355,8 +358,14 @@ def run():
             Instructions(instructions=README_SUMMARY_PROMPT_TEMPLATE).to_xml()
             ).decode()
         )
-        summary = extract_between_tags("summary", summary)[0]
-        log.info("README summary complete", summary=summary)
+        _summary = extract_between_tags("summary", summary)
+        if len(_summary) > 0:
+            log.info("README summary complete", summary=summary)
+            summary = _summary[0]
+        else:
+            # Some human languages are not supported by some LLMs
+            log.warning("Couldn't analyze README")
+            summary = ''
     else:
         log.warning("No README summary found")
         summary = ''
