@@ -11,15 +11,19 @@ dotenv.load_dotenv()
 
 log = logging.getLogger(__name__)
 
+
 class LLMError(Exception):
     """Base class for all LLM-related exceptions."""
     pass
 
+
 class RateLimitError(LLMError):
     pass
 
+
 class APIConnectionError(LLMError):
     pass
+
 
 class APIStatusError(LLMError):
     def __init__(self, status_code: int, response: Dict[str, Any]):
@@ -28,6 +32,8 @@ class APIStatusError(LLMError):
         super().__init__(f"Received non-200 status code: {status_code}")
 
 # Base LLM class to handle common functionality
+
+
 class LLM:
     def __init__(self, system_prompt: str = "") -> None:
         self.system_prompt = system_prompt
@@ -55,7 +61,8 @@ class LLM:
         self.history.append({"role": role, "content": content})
 
     def _handle_error(self, e: Exception, attempt: int) -> None:
-        log.error(f"An error occurred on attempt {attempt}: {str(e)}", exc_info=e)
+        log.error(
+            f"An error occurred on attempt {attempt}: {str(e)}", exc_info=e)
         raise e
 
     def _log_response(self, response: Dict[str, Any]) -> None:
@@ -70,9 +77,11 @@ class LLM:
 
         response_text = self.get_response(response)
         if response_model:
-            response_text = self._validate_response(response_text, response_model) if response_model else response_text
+            response_text = self._validate_response(
+                response_text, response_model) if response_model else response_text
         self._add_to_history("assistant", response_text)
         return response_text
+
 
 class Claude(LLM):
     def __init__(self, model: str, base_url: str, system_prompt: str = "") -> None:
@@ -86,7 +95,7 @@ class Claude(LLM):
             messages = [{"role": "user", "content": user_prompt}]
         else:
             self.prefill = "{    \"scratchpad\": \"1."
-            messages = [{"role": "user", "content": user_prompt}, 
+            messages = [{"role": "user", "content": user_prompt},
                         {"role": "assistant", "content": self.prefill}]
         return messages
 
@@ -113,11 +122,12 @@ class Claude(LLM):
 class ChatGPT(LLM):
     def __init__(self, model: str, base_url: str, system_prompt: str = "") -> None:
         super().__init__(system_prompt)
-        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=base_url)
+        self.client = openai.OpenAI(api_key=os.getenv(
+            "OPENAI_API_KEY"), base_url=base_url)
         self.model = model
 
     def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
-        messages = [{"role": "system", "content": self.system_prompt}, 
+        messages = [{"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": user_prompt}]
         return messages
 
@@ -139,7 +149,50 @@ class ChatGPT(LLM):
         except openai.APIConnectionError as e:
             raise APIConnectionError("The server could not be reached") from e
         except openai.RateLimitError as e:
-            raise RateLimitError("Request was rate-limited; consider backing off") from e
+            raise RateLimitError(
+                "Request was rate-limited; consider backing off") from e
+        except openai.APIStatusError as e:
+            raise APIStatusError(e.status_code, e.response) from e
+        except Exception as e:
+            raise LLMError(f"An unexpected error occurred: {str(e)}") from e
+
+    def get_response(self, response: Dict[str, Any]) -> str:
+        response = response.choices[0].message.content
+        return response
+
+
+class DeepSeek(LLM):
+    def __init__(self, model: str, base_url: str, system_prompt: str = "") -> None:
+        super().__init__(system_prompt)
+        self.client = openai.OpenAI(api_key=os.getenv(
+            "DEEPSEEK_API_KEY"), base_url=base_url)
+        self.model = model
+
+    def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
+        messages = [{"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_prompt}]
+        return messages
+
+    def send_message(self, messages: List[Dict[str, str]], max_tokens: int, response_model=None) -> Dict[str, Any]:
+        try:
+            params = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+            }
+
+            # Add response format configuration if a model is provided
+            if response_model:
+                params["response_format"] = {
+                    "type": "json_object"
+                }
+
+            return self.client.chat.completions.create(**params)
+        except openai.APIConnectionError as e:
+            raise APIConnectionError("The server could not be reached") from e
+        except openai.RateLimitError as e:
+            raise RateLimitError(
+                "Request was rate-limited; consider backing off") from e
         except openai.APIStatusError as e:
             raise APIStatusError(e.status_code, e.response) from e
         except Exception as e:
@@ -164,10 +217,9 @@ class Ollama(LLM):
             "model": self.model,
             "prompt": user_prompt,
             "options": {
-            "temperature": 1,
-            "system": self.system_prompt,
-            }
-            ,"stream":False,
+                "temperature": 1,
+                "system": self.system_prompt,
+            }, "stream": False,
         }
 
         try:
@@ -179,7 +231,8 @@ class Ollama(LLM):
             elif e.response.status_code >= 500:
                 raise APIConnectionError("Server could not be reached") from e
             else:
-                raise APIStatusError(e.response.status_code, e.response.json()) from e
+                raise APIStatusError(e.response.status_code,
+                                     e.response.json()) from e
 
     def get_response(self, response: Dict[str, Any]) -> str:
         response = response.json()['response']
@@ -187,4 +240,3 @@ class Ollama(LLM):
 
     def _log_response(self, response: Dict[str, Any]) -> None:
         log.debug("Received chat response", extra={"usage": "Ollama"})
-

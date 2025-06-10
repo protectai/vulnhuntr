@@ -87,7 +87,7 @@ options:
   -r ROOT, --root ROOT  Path to the root directory of the project
   -a ANALYZE, --analyze ANALYZE
                         Specific path or file within the project to analyze
-  -l {claude,gpt,ollama}, --llm {claude,gpt,ollama}
+  -l {claude,gpt,deepseek,ollama}, --llm {claude,gpt,deepseek,ollama}
                         LLM client to use (default: claude)
   -v, --verbosity       Increase output verbosity (-v for INFO, -vv for DEBUG)
 ```
