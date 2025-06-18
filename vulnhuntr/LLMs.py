@@ -6,6 +6,7 @@ import os
 import openai
 import dotenv
 import requests
+import re
 
 dotenv.load_dotenv()
 
@@ -37,19 +38,11 @@ class LLM:
         self.prefill = None
 
     def _validate_response(self, response_text: str, response_model: BaseModel) -> BaseModel:
-        try:
-            if self.prefill:
-                response_text = self.prefill + response_text
-            return response_model.model_validate_json(response_text)
-        except ValidationError as e:
-            log.warning("[-] Response validation failed\n", exc_info=e)
-            raise LLMError("Validation failed") from e
-            # try:
-            #     response_clean_attempt = response_text.split('{', 1)[1]
-            #     return response_model.model_validate_json(response_clean_attempt)
-            # except ValidationError as e:
-            #     log.warning("Response validation failed", exc_info=e)
-            #    raise LLMError("Validation failed") from e
+        # 尝试提取第一个合法的 JSON
+        match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if match:
+            response_text = match.group(0)
+        return response_model.model_validate_json(response_text)
 
     def _add_to_history(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
