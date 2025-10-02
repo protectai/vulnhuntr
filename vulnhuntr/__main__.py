@@ -1,4 +1,3 @@
-import json
 import re
 import argparse
 import structlog
@@ -60,9 +59,6 @@ class ReadmeSummary(BaseXmlModel, tag="readme_summary"):
 
 class Instructions(BaseXmlModel, tag="instructions"):
     instructions: str
-
-class ResponseFormat(BaseXmlModel, tag="response_format"):
-    response_format: str
 
 class AnalysisApproach(BaseXmlModel, tag="analysis_approach"):
     analysis_approach: str
@@ -386,10 +382,7 @@ def run():
                     Instructions(instructions=INITIAL_ANALYSIS_PROMPT_TEMPLATE).to_xml() + b'\n' +
                     AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
                     PreviousAnalysis(previous_analysis='').to_xml() + b'\n' +
-                    Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                    ResponseFormat(response_format=json.dumps(Response.model_json_schema(), indent=4
-                    )
-                ).to_xml()
+                    Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml()
             ).decode()
 
             initial_analysis_report: Response = llm.chat(user_prompt, response_model=Response)
@@ -453,12 +446,7 @@ def run():
                             Instructions(instructions=VULN_SPECIFIC_BYPASSES_AND_PROMPTS[vuln_type]['prompt']).to_xml() + b'\n' +
                             AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
                             PreviousAnalysis(previous_analysis=previous_analysis).to_xml() + b'\n' +
-                            Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                            ResponseFormat(
-                                response_format=json.dumps(
-                                    Response.model_json_schema(), indent=4
-                                )
-                            ).to_xml()
+                            Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml()
                         ).decode()
 
                         secondary_analysis_report: Response = llm.chat(vuln_specific_user_prompt, response_model=Response)

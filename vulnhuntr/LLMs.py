@@ -1,5 +1,6 @@
 import logging
-from typing import List, Union, Dict, Any
+import json
+from typing import List, Union, Dict, Any, Optional
 from pydantic import BaseModel, ValidationError
 import anthropic
 import os
@@ -36,6 +37,27 @@ class LLM:
         self.prev_response: Union[str, None] = None
         self.prefill = None
 
+    def prepare_user_prompt(self, user_prompt: str, response_model: Optional[BaseModel]) -> str:
+        """
+        Prepare user prompt with response format if needed.
+
+        Base implementation appends JSON schema to the prompt.
+        Subclasses can override to use native API support instead.
+
+        Args:
+            user_prompt: The original user prompt
+            response_model: The pydantic model for response validation
+
+        Returns:
+            The prepared prompt (possibly with response format appended)
+        """
+        if response_model is None:
+            return user_prompt
+
+        # Append JSON schema to prompt for LLMs without native response format support
+        schema_str = json.dumps(response_model.model_json_schema(), indent=4)
+        return f"{user_prompt}\n\nPlease respond in the following JSON format:\n{schema_str}"
+
     def _validate_response(self, response_text: str, response_model: BaseModel) -> BaseModel:
         try:
             if self.prefill:
@@ -63,8 +85,11 @@ class LLM:
         log.debug("Received chat response", extra={"usage": usage_info})
 
     def chat(self, user_prompt: str, response_model: BaseModel = None, max_tokens: int = 4096) -> Union[BaseModel, str]:
+        # Prepare the prompt with response format if needed
+        prepared_prompt = self.prepare_user_prompt(user_prompt, response_model)
+
         self._add_to_history("user", user_prompt)
-        messages = self.create_messages(user_prompt)
+        messages = self.create_messages(prepared_prompt)
         response = self.send_message(messages, max_tokens, response_model)
         self._log_response(response)
 
@@ -86,7 +111,7 @@ class Claude(LLM):
             messages = [{"role": "user", "content": user_prompt}]
         else:
             self.prefill = "{    \"scratchpad\": \"1."
-            messages = [{"role": "user", "content": user_prompt}, 
+            messages = [{"role": "user", "content": user_prompt},
                         {"role": "assistant", "content": self.prefill}]
         return messages
 
@@ -116,8 +141,21 @@ class ChatGPT(LLM):
         self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=base_url)
         self.model = model
 
+    def prepare_user_prompt(self, user_prompt: str, response_model: Optional[BaseModel]) -> str:
+        """
+        ChatGPT uses native API response format support, so don't append schema to prompt.
+
+        Args:
+            user_prompt: The original user prompt
+            response_model: The pydantic model (unused here, handled by API)
+
+        Returns:
+            The original prompt unchanged
+        """
+        return user_prompt
+
     def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
-        messages = [{"role": "system", "content": self.system_prompt}, 
+        messages = [{"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": user_prompt}]
         return messages
 
@@ -187,4 +225,3 @@ class Ollama(LLM):
 
     def _log_response(self, response: Dict[str, Any]) -> None:
         log.debug("Received chat response", extra={"usage": "Ollama"})
-
