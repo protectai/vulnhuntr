@@ -102,7 +102,7 @@ class SymbolExtractor:
                 elif name.type == 'module':
                     if name.name == symbol_name:
                         match = self._create_match_obj(name, symbol_name)
-                        if 'import ' in match['source']:
+                        if match and match.get('source') and 'import ' in match['source']:
                             loc = name.goto()
                             if loc:
                                 match = self._create_match_obj(loc[0], symbol_name)
@@ -147,7 +147,7 @@ class SymbolExtractor:
             elif name.type == 'module':
                 if name.name == symbol_name:
                     match = self._create_match_obj(name, symbol_name)
-                    if 'import ' in match['source']:
+                    if match and match.get('source') and 'import ' in match['source']:
                         loc = name.goto()
                         if loc:
                             match = self._create_match_obj(loc[0], symbol_name)
