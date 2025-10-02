@@ -44,8 +44,15 @@ Vulnhuntr leverages the power of LLMs to automatically create and analyze entire
 
 ## Installation
 
+### Prerequisites
+
 > [!IMPORTANT]
-> Vulnhuntr strictly requires Python 3.10 because of a number of bugs in Jedi which it uses to parse Python code. It will not work reliably if installed with any other versions of Python.
+> **Rust and Cargo Required**: Vulnhuntr requires Rust and Cargo to be installed on your system to compile native extensions during installation. Install Rust using [rustup](https://rustup.rs/) or your system's package manager.
+
+> [!IMPORTANT]
+> **Python 3.10 Required**: Vulnhuntr strictly requires Python 3.10 because of a number of bugs in Jedi which it uses to parse Python code. It will not work reliably if installed with any other versions of Python.
+
+### Installation Methods
 
 We recommend using [pipx](https://github.com/pypa/pipx) or Docker to easily install and run Vulnhuntr.
 
