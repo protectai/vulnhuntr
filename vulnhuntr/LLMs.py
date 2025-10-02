@@ -6,6 +6,7 @@ import os
 import openai
 import dotenv
 import requests
+import time
 
 dotenv.load_dotenv()
 
@@ -27,6 +28,46 @@ class APIStatusError(LLMError):
         self.response = response
         super().__init__(f"Received non-200 status code: {status_code}")
 
+def retry_with_exponential_backoff(max_retries: int = 5, initial_delay: float = 1.0):
+    """Decorator for retrying functions with exponential backoff on rate limit errors.
+
+    Args:
+        max_retries: Maximum number of retry attempts (default: 5)
+        initial_delay: Initial delay in seconds before first retry (default: 1.0)
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exception = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except (anthropic.RateLimitError, openai.RateLimitError) as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        log.warning(
+                            f"Rate limit error on attempt {attempt + 1}/{max_retries + 1}. "
+                            f"Retrying in {delay}s..."
+                        )
+                        time.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                    else:
+                        log.error(f"Max retries ({max_retries}) exceeded for rate limit errors")
+                        raise RateLimitError("Max retries exceeded") from e
+                # Don't retry on other errors
+                except (anthropic.APIConnectionError, openai.APIConnectionError) as e:
+                    raise APIConnectionError("Server could not be reached") from e
+                except (anthropic.APIStatusError, openai.APIStatusError) as e:
+                    raise APIStatusError(e.status_code, e.response) from e
+
+            # This should never be reached, but just in case
+            if last_exception:
+                raise RateLimitError("Max retries exceeded") from last_exception
+
+        return wrapper
+    return decorator
+
 # Base LLM class to handle common functionality
 class LLM:
     def __init__(self, system_prompt: str = "") -> None:
@@ -44,12 +85,6 @@ class LLM:
         except ValidationError as e:
             log.warning("[-] Response validation failed\n", exc_info=e)
             raise LLMError("Validation failed") from e
-            # try:
-            #     response_clean_attempt = response_text.split('{', 1)[1]
-            #     return response_model.model_validate_json(response_clean_attempt)
-            # except ValidationError as e:
-            #     log.warning("Response validation failed", exc_info=e)
-            #    raise LLMError("Validation failed") from e
 
     def _add_to_history(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
@@ -78,7 +113,7 @@ class Claude(LLM):
     def __init__(self, model: str, base_url: str, system_prompt: str = "") -> None:
         super().__init__(system_prompt)
         # API key is retrieved from an environment variable by default
-        self.client = anthropic.Anthropic(max_retries=3, base_url=base_url)
+        self.client = anthropic.Anthropic(max_retries=0, base_url=base_url)  # Disable built-in retries
         self.model = model
 
     def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
@@ -86,25 +121,19 @@ class Claude(LLM):
             messages = [{"role": "user", "content": user_prompt}]
         else:
             self.prefill = "{    \"scratchpad\": \"1."
-            messages = [{"role": "user", "content": user_prompt}, 
+            messages = [{"role": "user", "content": user_prompt},
                         {"role": "assistant", "content": self.prefill}]
         return messages
 
+    @retry_with_exponential_backoff(max_retries=5, initial_delay=1.0)
     def send_message(self, messages: List[Dict[str, str]], max_tokens: int, response_model: BaseModel) -> Dict[str, Any]:
-        try:
-            # response_model is not used here, only in ChatGPT
-            return self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=self.system_prompt,
-                messages=messages
-            )
-        except anthropic.APIConnectionError as e:
-            raise APIConnectionError("Server could not be reached") from e
-        except anthropic.RateLimitError as e:
-            raise RateLimitError("Request was rate-limited") from e
-        except anthropic.APIStatusError as e:
-            raise APIStatusError(e.status_code, e.response) from e
+        # response_model is not used here, only in ChatGPT
+        return self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=self.system_prompt,
+            messages=messages
+        )
 
     def get_response(self, response: Dict[str, Any]) -> str:
         return response.content[0].text.replace('\n', '')
@@ -117,33 +146,25 @@ class ChatGPT(LLM):
         self.model = model
 
     def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
-        messages = [{"role": "system", "content": self.system_prompt}, 
+        messages = [{"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": user_prompt}]
         return messages
 
+    @retry_with_exponential_backoff(max_retries=5, initial_delay=1.0)
     def send_message(self, messages: List[Dict[str, str]], max_tokens: int, response_model=None) -> Dict[str, Any]:
-        try:
-            params = {
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+
+        # Add response format configuration if a model is provided
+        if response_model:
+            params["response_format"] = {
+                "type": "json_object"
             }
 
-            # Add response format configuration if a model is provided
-            if response_model:
-                params["response_format"] = {
-                    "type": "json_object"
-                }
-
-            return self.client.chat.completions.create(**params)
-        except openai.APIConnectionError as e:
-            raise APIConnectionError("The server could not be reached") from e
-        except openai.RateLimitError as e:
-            raise RateLimitError("Request was rate-limited; consider backing off") from e
-        except openai.APIStatusError as e:
-            raise APIStatusError(e.status_code, e.response) from e
-        except Exception as e:
-            raise LLMError(f"An unexpected error occurred: {str(e)}") from e
+        return self.client.chat.completions.create(**params)
 
     def get_response(self, response: Dict[str, Any]) -> str:
         response = response.choices[0].message.content
@@ -159,6 +180,7 @@ class Ollama(LLM):
     def create_messages(self, user_prompt: str) -> str:
         return user_prompt
 
+    @retry_with_exponential_backoff(max_retries=5, initial_delay=1.0)
     def send_message(self, user_prompt: str, max_tokens: int, response_model: BaseModel) -> Dict[str, Any]:
         payload = {
             "model": self.model,
@@ -170,16 +192,18 @@ class Ollama(LLM):
             ,"stream":False,
         }
 
-        try:
-            response = requests.post(self.api_url, json=payload)
-            return response
-        except requests.exceptions.RequestException as e:
-            if e.response.status_code == 429:
-                raise RateLimitError("Request was rate-limited") from e
-            elif e.response.status_code >= 500:
-                raise APIConnectionError("Server could not be reached") from e
-            else:
-                raise APIStatusError(e.response.status_code, e.response.json()) from e
+        response = requests.post(self.api_url, json=payload)
+
+        # Check for rate limit or server errors
+        if response.status_code == 429:
+            # Create a mock RateLimitError to trigger retry logic
+            raise anthropic.RateLimitError("Rate limited", response=response, body={})
+        elif response.status_code >= 500:
+            raise anthropic.APIConnectionError("Server error")
+        elif response.status_code >= 400:
+            raise anthropic.APIStatusError("Client error", response=response, body=response.json())
+
+        return response
 
     def get_response(self, response: Dict[str, Any]) -> str:
         response = response.json()['response']
@@ -187,4 +211,3 @@ class Ollama(LLM):
 
     def _log_response(self, response: Dict[str, Any]) -> None:
         log.debug("Received chat response", extra={"usage": "Ollama"})
-
