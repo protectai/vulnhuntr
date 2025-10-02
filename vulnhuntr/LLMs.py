@@ -1,4 +1,6 @@
 import logging
+import json
+import re
 from typing import List, Union, Dict, Any
 from pydantic import BaseModel, ValidationError
 import anthropic
@@ -36,20 +38,96 @@ class LLM:
         self.prev_response: Union[str, None] = None
         self.prefill = None
 
+    def _extract_json(self, response_text: str) -> str:
+        """Extract JSON from response text that may contain extra content.
+
+        Handles cases like:
+        - Text wrapped in <think>...</think> tags
+        - JSON in markdown code blocks
+        - Plain JSON with surrounding text
+        """
+        # First, try to find JSON in markdown code blocks
+        markdown_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if markdown_match:
+            return markdown_match.group(1)
+
+        # Try to extract JSON between first { and last }
+        first_brace = response_text.find('{')
+        last_brace = response_text.rfind('}')
+
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            return response_text[first_brace:last_brace + 1]
+
+        # Return as-is if no extraction patterns match
+        return response_text
+
+    def _filter_invalid_enums(self, data: Dict[str, Any], response_model: BaseModel) -> Dict[str, Any]:
+        """Filter out invalid enum values from vulnerability_types field.
+
+        This prevents validation errors when LLM returns vulnerability types
+        not in the defined enum (e.g., 'DoS', 'CSRF', etc.).
+        """
+        if 'vulnerability_types' not in data:
+            return data
+
+        # Get the enum field from the response model
+        vuln_types_field = response_model.model_fields.get('vulnerability_types')
+        if not vuln_types_field:
+            return data
+
+        # Extract the enum class from the List[Enum] type annotation
+        # Handle List[EnumType] annotation
+        field_annotation = vuln_types_field.annotation
+        enum_class = None
+
+        # Try to extract enum from typing.List[EnumClass]
+        if hasattr(field_annotation, '__args__'):
+            enum_class = field_annotation.__args__[0]
+
+        if not enum_class or not hasattr(enum_class, '__members__'):
+            return data
+
+        # Get valid enum values
+        valid_values = set(enum_class.__members__.keys())
+
+        # Filter vulnerability_types list
+        original_types = data['vulnerability_types']
+        filtered_types = [vt for vt in original_types if vt in valid_values]
+
+        # Log if any were filtered out
+        if len(filtered_types) < len(original_types):
+            invalid_types = set(original_types) - set(filtered_types)
+            log.warning("Filtered out invalid vulnerability types: %s", invalid_types)
+
+        data['vulnerability_types'] = filtered_types
+        return data
+
     def _validate_response(self, response_text: str, response_model: BaseModel) -> BaseModel:
         try:
+            # Apply prefill if set
             if self.prefill:
                 response_text = self.prefill + response_text
-            return response_model.model_validate_json(response_text)
+
+            # Extract JSON from potentially wrapped response
+            json_text = self._extract_json(response_text)
+
+            # Parse JSON to dict for enum filtering
+            try:
+                data = json.loads(json_text)
+            except json.JSONDecodeError as json_err:
+                log.warning("Failed to parse JSON: %s", json_err)
+                raise LLMError("Validation failed") from json_err
+
+            # Filter invalid enum values
+            data = self._filter_invalid_enums(data, response_model)
+
+            # Convert back to JSON and validate with pydantic
+            filtered_json = json.dumps(data)
+            return response_model.model_validate_json(filtered_json)
+
         except ValidationError as e:
             log.warning("[-] Response validation failed\n", exc_info=e)
             raise LLMError("Validation failed") from e
-            # try:
-            #     response_clean_attempt = response_text.split('{', 1)[1]
-            #     return response_model.model_validate_json(response_clean_attempt)
-            # except ValidationError as e:
-            #     log.warning("Response validation failed", exc_info=e)
-            #    raise LLMError("Validation failed") from e
 
     def _add_to_history(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
