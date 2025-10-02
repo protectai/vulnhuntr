@@ -3,7 +3,7 @@ import re
 import argparse
 import structlog
 from vulnhuntr.symbol_finder import SymbolExtractor
-from vulnhuntr.LLMs import Claude, ChatGPT, Ollama
+from vulnhuntr.LLMs import Claude, ChatGPT, Ollama, OpenRouter
 from vulnhuntr.prompts import *
 from rich import print
 from typing import List, Generator
@@ -281,7 +281,7 @@ def extract_between_tags(tag: str, string: str, strip: bool = False) -> list[str
         ext_list = [e.strip() for e in ext_list]
     return ext_list
 
-def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | Ollama:
+def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | Ollama | OpenRouter:
     llm_arg = llm_arg.lower()
     if llm_arg == 'claude':
         anth_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
@@ -295,8 +295,12 @@ def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | 
         ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
         ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/api/generate")
         llm = Ollama(ollama_model, ollama_base_url, system_prompt)
+    elif llm_arg == 'openrouter':
+        openrouter_model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
+        openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        llm = OpenRouter(openrouter_model, openrouter_base_url, system_prompt)
     else:
-        raise ValueError(f"Invalid LLM argument: {llm_arg}\nValid options are: claude, gpt, ollama")
+        raise ValueError(f"Invalid LLM argument: {llm_arg}\nValid options are: claude, gpt, ollama, openrouter")
     return llm
 
 def print_readable(report: Response) -> None:
@@ -321,7 +325,7 @@ def run():
     parser = argparse.ArgumentParser(description='Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY/OPENAI_API_KEY before running.')
     parser.add_argument('-r', '--root', type=str, required=True, help='Path to the root directory of the project')
     parser.add_argument('-a', '--analyze', type=str, help='Specific path or file within the project to analyze')
-    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt', 'ollama'], default='claude', help='LLM client to use (default: claude)')
+    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt', 'ollama', 'openrouter'], default='claude', help='LLM client to use (default: claude)')
     parser.add_argument('-v', '--verbosity', action='count', default=0, help='Increase output verbosity (-v for INFO, -vv for DEBUG)')
     args = parser.parse_args()
 
