@@ -317,6 +317,57 @@ def print_readable(report: Response) -> None:
         print('-' * 40)
         print()  # Add an empty line between attributes
 
+def save_checkpoint(checkpoint_file: str, checkpoint_data: dict) -> None:
+    """Save analysis checkpoint to file for later resumption.
+
+    Args:
+        checkpoint_file: Path to checkpoint file
+        checkpoint_data: Dictionary containing checkpoint state
+    """
+    with open(checkpoint_file, 'w') as f:
+        json.dump(checkpoint_data, f, indent=2)
+    log.info(f"Checkpoint saved to {checkpoint_file}")
+
+def load_checkpoint(checkpoint_file: str) -> dict:
+    """Load analysis checkpoint from file.
+
+    Args:
+        checkpoint_file: Path to checkpoint file
+
+    Returns:
+        Dictionary containing checkpoint state, or None if file doesn't exist
+    """
+    if not os.path.exists(checkpoint_file):
+        return None
+
+    try:
+        with open(checkpoint_file, 'r') as f:
+            checkpoint_data = json.load(f)
+        log.info(f"Checkpoint loaded from {checkpoint_file}")
+        return checkpoint_data
+    except (json.JSONDecodeError, IOError) as e:
+        log.warning(f"Failed to load checkpoint: {e}")
+        return None
+
+def should_skip_file(file_path: str, checkpoint_data: dict) -> bool:
+    """Determine if a file should be skipped based on checkpoint data.
+
+    Args:
+        file_path: Path to file being analyzed
+        checkpoint_data: Dictionary containing checkpoint state
+
+    Returns:
+        True if file should be skipped, False otherwise
+    """
+    if not checkpoint_data:
+        return False
+
+    # Skip if this file was completed in a previous run
+    if checkpoint_data.get('file') == file_path and checkpoint_data.get('stage') == 'completed':
+        return True
+
+    return False
+
 def run():
     parser = argparse.ArgumentParser(description='Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY/OPENAI_API_KEY before running.')
     parser.add_argument('-r', '--root', type=str, required=True, help='Path to the root directory of the project')
