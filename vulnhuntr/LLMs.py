@@ -150,6 +150,51 @@ class ChatGPT(LLM):
         return response
 
 
+
+
+class OpenRouter(LLM):
+    def __init__(self, model: str, base_url: str, system_prompt: str = "") -> None:
+        super().__init__(system_prompt)
+        self.client = openai.OpenAI(
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            base_url=base_url
+        )
+        self.model = model
+
+    def create_messages(self, user_prompt: str) -> List[Dict[str, str]]:
+        messages = [{"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_prompt}]
+        return messages
+
+    def send_message(self, messages: List[Dict[str, str]], max_tokens: int, response_model=None) -> Dict[str, Any]:
+        try:
+            params = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+            }
+
+            # Add response format configuration if a model is provided
+            if response_model:
+                params["response_format"] = {
+                    "type": "json_object"
+                }
+
+            return self.client.chat.completions.create(**params)
+        except openai.APIConnectionError as e:
+            raise APIConnectionError("The server could not be reached") from e
+        except openai.RateLimitError as e:
+            raise RateLimitError("Request was rate-limited; consider backing off") from e
+        except openai.APIStatusError as e:
+            raise APIStatusError(e.status_code, e.response) from e
+        except Exception as e:
+            raise LLMError(f"An unexpected error occurred: {str(e)}") from e
+
+    def get_response(self, response: Dict[str, Any]) -> str:
+        response = response.choices[0].message.content
+        return response
+
+
 class Ollama(LLM):
     def __init__(self, model: str, base_url: str, system_prompt: str = "") -> None:
         super().__init__(system_prompt)
