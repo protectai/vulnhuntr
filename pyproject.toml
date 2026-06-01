@@ -19,6 +19,11 @@ jedi = "0.18.0"
 parso = "0.8.0"
 openai = "^1.51.2"
 python-dotenv = "^1.0.0"
+# Direct floor pin to keep vulnhuntr off requests<2.32.4 (CVE-2024-47081 /
+# GHSA-9hjg-9r4m-mvj7 — netrc credential leak through URL user-info parsing
+# affecting any HTTP call that takes a user-configured URL, including the
+# LLM-API wrapper in `vulnhuntr/LLMs.py`). See issue #50.
+requests = "^2.32.4"
 
 [build-system]
 requires = ["poetry-core"]
