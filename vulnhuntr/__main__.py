@@ -185,7 +185,7 @@ class RepoOps:
             r'def\s+\w+\(req:\s*func\.HttpRequest\)\s*->',
 
             # Google Cloud Functions
-            r'def\s+\w+\(request\):'
+            r'def\s+\w+\(request\):',
 
             # Server startup code
             r'app\.run\(.*?\)',
