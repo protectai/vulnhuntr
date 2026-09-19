@@ -2,17 +2,21 @@ import json
 import re
 import argparse
 import structlog
-from vulnhuntr.symbol_finder import SymbolExtractor
-from vulnhuntr.LLMs import Claude, ChatGPT, Ollama
-from vulnhuntr.prompts import *
-from rich import print
-from typing import List, Generator
+from typing import List, Generator, Optional, Dict, Any
 from enum import Enum
 from pathlib import Path
 from pydantic_xml import BaseXmlModel, element
 from pydantic import BaseModel, Field
 import dotenv
 import os
+from rich import print
+from rich.table import Table
+from rich.console import Console
+
+from vulnhuntr.symbol_finder import SymbolExtractor
+from vulnhuntr.LLMs import Claude, ChatGPT, Ollama, Gemini
+from vulnhuntr.prompts import *
+from vulnhuntr.reporting import generate_sarif, generate_html_report
 
 dotenv.load_dotenv()
 
@@ -21,7 +25,7 @@ structlog.configure(
         structlog.processors.JSONRenderer()
     ],
     logger_factory=structlog.WriteLoggerFactory(
-        file=Path('vulnhuntr').with_suffix(".log").open("wt")
+        file=Path('vulnhuntr').with_suffix(".log").open("wt", encoding="utf-8")
     )
 )
 
@@ -29,6 +33,8 @@ import faulthandler
 faulthandler.enable()
 
 log = structlog.get_logger("vulnhuntr")
+console = Console()
+
 
 class VulnType(str, Enum):
     LFI = "LFI"
@@ -38,47 +44,64 @@ class VulnType(str, Enum):
     SQLI = "SQLI"
     XSS = "XSS"
     IDOR = "IDOR"
+    SSTI = "SSTI"
+    DESERIALIZATION = "DESERIALIZATION"
+    AUTH_BYPASS = "AUTH_BYPASS"
+    PATH_TRAVERSAL = "PATH_TRAVERSAL"
+
 
 class ContextCode(BaseModel):
     name: str = Field(description="Function or Class name")
     reason: str = Field(description="Brief reason why this function's code is needed for analysis")
-    code_line: str = Field(description="The single line of code where where this context object is referenced.")
+    code_line: str = Field(description="The single line of code where this context object is referenced.")
+
 
 class Response(BaseModel):
     scratchpad: str = Field(description="Your step-by-step analysis process. Output in plaintext with no line breaks.")
     analysis: str = Field(description="Your final analysis. Output in plaintext with no line breaks.")
-    poc: str = Field(description="Proof-of-concept exploit, if applicable.")
+    poc: str = Field(default="None", description="Proof-of-concept exploit, if applicable.")
+    remediation: Optional[str] = Field(default="", description="Defensive remediation guidance explaining how to securely fix the issue.")
     confidence_score: int = Field(description="0-10, where 0 is no confidence and 10 is absolute certainty because you have the entire user input to server output code path.")
     vulnerability_types: List[VulnType] = Field(description="The types of identified vulnerabilities")
-    context_code: List[ContextCode] = Field(description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
+    context_code: List[ContextCode] = Field(default_factory=list, description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
+
 
 class ReadmeContent(BaseXmlModel, tag="readme_content"):
     content: str
 
+
 class ReadmeSummary(BaseXmlModel, tag="readme_summary"):
     readme_summary: str
+
 
 class Instructions(BaseXmlModel, tag="instructions"):
     instructions: str
 
+
 class ResponseFormat(BaseXmlModel, tag="response_format"):
     response_format: str
+
 
 class AnalysisApproach(BaseXmlModel, tag="analysis_approach"):
     analysis_approach: str
 
+
 class Guidelines(BaseXmlModel, tag="guidelines"):
     guidelines: str
+
 
 class FileCode(BaseXmlModel, tag="file_code"):
     file_path: str = element()
     file_source: str = element()
 
+
 class PreviousAnalysis(BaseXmlModel, tag="previous_analysis"):
     previous_analysis: str
 
+
 class ExampleBypasses(BaseXmlModel, tag="example_bypasses"):
     example_bypasses: str
+
 
 class CodeDefinition(BaseXmlModel, tag="code"):
     name: str = element()
@@ -86,107 +109,62 @@ class CodeDefinition(BaseXmlModel, tag="code"):
     file_path: str = element()
     source: str = element()
 
+
 class CodeDefinitions(BaseXmlModel, tag="context_code"):
     definitions: List[CodeDefinition] = []
 
+
 class RepoOps:
-    def __init__(self, repo_path: Path | str ) -> None:
+    def __init__(self, repo_path: Path | str) -> None:
         self.repo_path = Path(repo_path)
-        self.to_exclude = {'/setup.py', '/test', '/example', '/docs', '/site-packages', '.venv', 'virtualenv', '/dist'}
+        self.to_exclude = {'/setup.py', '/test', '/example', '/docs', '/site-packages', '.venv', 'virtualenv', '/dist', '/build'}
         self.file_names_to_exclude = ['test_', 'conftest', '_test.py']
 
         patterns = [
-            #Async
-            r'async\sdef\s\w+\(.*?request',
-
+            # Async
+            r'async\s+def\s+\w+\(.*?request',
             # Gradio
-            r'gr.Interface\(.*?\)',
-            r'gr.Interface\.launch\(.*?\)',
-
+            r'gr\.Interface\(.*?\)',
+            r'gr\.Interface\.launch\(.*?\)',
             # Flask
             r'@app\.route\(.*?\)',
             r'@blueprint\.route\(.*?\)',
             r'class\s+\w+\(MethodView\):',
             r'@(?:app|blueprint)\.add_url_rule\(.*?\)',
-
-            # FastAPI
+            # FastAPI & Starlette
             r'@app\.(?:get|post|put|delete|patch|options|head|trace)\(.*?\)',
             r'@router\.(?:get|post|put|delete|patch|options|head|trace)\(.*?\)',
-
+            r'Route\(.*?\)',
             # Django
-            r'url\(.*?\)', #Too broad?
+            r'url\(.*?\)',
             r're_path\(.*?\)',
+            r'path\(.*?\)',
             r'@channel_layer\.group_add',
             r'@database_sync_to_async',
-
             # Pyramid
             r'@view_config\(.*?\)',
-
             # Bottle
             r'@(?:route|get|post|put|delete|patch)\(.*?\)',
-
             # Tornado
             r'class\s+\w+\((?:RequestHandler|WebSocketHandler)\):',
             r'@tornado\.gen\.coroutine',
             r'@tornado\.web\.asynchronous',
-
-            #WebSockets
+            # WebSockets
             r'websockets\.serve\(.*?\)',
             r'@websocket\.(?:route|get|post|put|delete|patch|head|options)\(.*?\)',
-
             # aiohttp
             r'app\.router\.add_(?:get|post|put|delete|patch|head|options)\(.*?\)',
             r'@routes\.(?:get|post|put|delete|patch|head|options)\(.*?\)',
-
             # Sanic
             r'@app\.(?:route|get|post|put|delete|patch|head|options)\(.*?\)',
             r'@blueprint\.(?:route|get|post|put|delete|patch|head|options)\(.*?\)',
-
             # Falcon
             r'app\.add_route\(.*?\)',
-
             # CherryPy
             r'@cherrypy\.expose',
-
-            # web2py
-            r'def\s+\w+\(\):\s*return\s+dict\(',
-
-            # Quart (ASGI version of Flask)
-            r'@app\.route\(.*?\)',
-            r'@blueprint\.route\(.*?\)',
-
-            # Starlette (which FastAPI is based on)
-            r'@app\.route\(.*?\)',
-            r'Route\(.*?\)',
-
-            # Responder
-            r'@api\.route\(.*?\)',
-
-            # Hug
-            r'@hug\.(?:get|post|put|delete|patch|options|head)\(.*?\)',
-
-            # Dash (for analytical web applications)
-            r'@app\.callback\(.*?\)',
-
-            # GraphQL entry points
+            # GraphQL
             r'class\s+\w+\(graphene\.ObjectType\):',
             r'@strawberry\.type',
-
-            # Generic decorators that might indicate custom routing
-            r'@route\(.*?\)',
-            r'@endpoint\(.*?\)',
-            r'@api\.\w+\(.*?\)',
-
-            # AWS Lambda handlers (which could be used with API Gateway)
-            r'def\s+lambda_handler\(event,\s*context\):',
-            r'def\s+handler\(event,\s*context\):',
-
-            # Azure Functions
-            r'def\s+\w+\(req:\s*func\.HttpRequest\)\s*->',
-
-            # Google Cloud Functions
-            r'def\s+\w+\(request\):'
-
             # Server startup code
             r'app\.run\(.*?\)',
             r'serve\(app,.*?\)',
@@ -194,296 +172,308 @@ class RepoOps:
             r'application\.listen\(.*?\)',
             r'run_server\(.*?\)',
             r'server\.start\(.*?\)',
-            r'app\.listen\(.*?\)',
-            r'httpd\.serve_forever\(.*?\)',
-            r'tornado\.ioloop\.IOLoop\.current\(\)\.start\(\)',
-            r'asyncio\.run\(.*?\.serve\(.*?\)\)',
             r'web\.run_app\(.*?\)',
-            r'WSGIServer\(.*?\)\.serve_forever\(\)',
-            r'make_server\(.*?\)\.serve_forever\(\)',
-            r'cherrypy\.quickstart\(.*?\)',
-            r'execute_from_command_line\(.*?\)',  # Django's manage.py
-            r'gunicorn\.app\.wsgiapp\.run\(\)',
-            r'waitress\.serve\(.*?\)',
-            r'hypercorn\.run\(.*?\)',
-            r'daphne\.run\(.*?\)',
-            r'werkzeug\.serving\.run_simple\(.*?\)',
-            r'gevent\.pywsgi\.WSGIServer\(.*?\)\.serve_forever\(\)',
-            r'grpc\.server\(.*?\)\.start\(\)',
-            r'app\.start_server\(.*?\)',  # Sanic
-            r'Server\(.*?\)\.run\(\)',    # Bottle
         ]
 
-        # Compile the patterns for efficiency
-        self.compiled_patterns = [re.compile(pattern) for pattern in patterns]
+        self.compiled_patterns = [re.compile(p) for p in patterns]
 
-    def get_readme_content(self) -> str:
-        # Use glob to find README.md or README.rst in a case-insensitive manner in the root directory
+    def get_readme_content(self) -> Optional[str]:
         prioritized_patterns = ["[Rr][Ee][Aa][Dd][Mm][Ee].[Mm][Dd]", "[Rr][Ee][Aa][Dd][Mm][Ee].[Rr][Ss][Tt]"]
-        
-        # First, look for README.md or README.rst in the root directory with case insensitivity
         for pattern in prioritized_patterns:
             for readme in self.repo_path.glob(pattern):
-                with readme.open(encoding='utf-8') as f:
-                    return f.read()
-                
-        # If no README.md or README.rst is found, look for any README file with supported extensions
-        for readme in self.repo_path.glob("[Rr][Ee][Aa][Dd][Mm][Ee]*.[Mm][DdRrSsTt]"):
-            with readme.open(encoding='utf-8') as f:
-                return f.read()
-        
-        return
+                try:
+                    with readme.open(encoding='utf-8', errors='ignore') as f:
+                        return f.read()
+                except Exception:
+                    pass
 
-    def get_relevant_py_files(self) -> Generator[Path, None, None]:
-        """Gets all Python files in a repo minus the ones in the exclude list (test, example, doc, docs)"""
+        for readme in self.repo_path.glob("[Rr][Ee][Aa][Dd][Mm][Ee]*.[Mm][DdRrSsTt]"):
+            try:
+                with readme.open(encoding='utf-8', errors='ignore') as f:
+                    return f.read()
+            except Exception:
+                pass
+        return None
+
+    def get_relevant_py_files(self) -> List[Path]:
         files = []
         for f in self.repo_path.rglob("*.py"):
-            # Convert the path to a string with forward slashes
-            f_str = str(f).replace('\\', '/')
-            
-            # Lowercase the string for case-insensitive matching
-            f_str = f_str.lower()
-
-            # Check if any exclusion pattern matches a substring of the full path
+            f_str = str(f).replace('\\', '/').lower()
             if any(exclude in f_str for exclude in self.to_exclude):
                 continue
-
-            # Check if the file name should be excluded
             if any(fn in f.name for fn in self.file_names_to_exclude):
                 continue
-            
             files.append(f)
-
         return files
 
-    def get_network_related_files(self, files: List) -> Generator[Path, None, None]:
+    def get_network_related_files(self, files: List[Path]) -> Generator[Path, None, None]:
         for py_f in files:
-            with py_f.open(encoding='utf-8') as f:
-                content = f.read()
-            if any(re.search(pattern, content) for pattern in self.compiled_patterns):
-                yield py_f
+            try:
+                with py_f.open(encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                if any(p.search(content) for p in self.compiled_patterns):
+                    yield py_f
+            except Exception:
+                continue
 
     def get_files_to_analyze(self, analyze_path: Path | None = None) -> List[Path]:
         path_to_analyze = analyze_path or self.repo_path
         if path_to_analyze.is_file():
-            return [ path_to_analyze ]
+            return [path_to_analyze]
         elif path_to_analyze.is_dir():
-            return path_to_analyze.rglob('*.py')
+            return list(path_to_analyze.rglob('*.py'))
         else:
             raise FileNotFoundError(f"Specified analyze path does not exist: {path_to_analyze}")
 
+
 def extract_between_tags(tag: str, string: str, strip: bool = False) -> list[str]:
-    """
-    https://github.com/anthropics/anthropic-cookbook/blob/main/misc/how_to_enable_json_mode.ipynb
-    """
     ext_list = re.findall(f"<{tag}>(.+?)</{tag}>", string, re.DOTALL)
     if strip:
         ext_list = [e.strip() for e in ext_list]
     return ext_list
 
-def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | Ollama:
+
+def initialize_llm(llm_arg: str, system_prompt: str = "", custom_model: Optional[str] = None) -> Claude | ChatGPT | Ollama | Gemini:
     llm_arg = llm_arg.lower()
-    if llm_arg == 'claude':
-        anth_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+    if llm_arg in ['gemini', 'google']:
+        model_name = custom_model or os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+        llm = Gemini(model=model_name, system_prompt=system_prompt)
+    elif llm_arg == 'claude':
+        anth_model = custom_model or os.getenv("ANTHROPIC_MODEL", "claude-3-7-sonnet-latest")
         anth_base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
         llm = Claude(anth_model, anth_base_url, system_prompt)
-    elif llm_arg == 'gpt':
-        openai_model = os.getenv("OPENAI_MODEL", "chatgpt-4o-latest")
+    elif llm_arg in ['gpt', 'openai']:
+        openai_model = custom_model or os.getenv("OPENAI_MODEL", "gpt-4o")
         openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         llm = ChatGPT(openai_model, openai_base_url, system_prompt)
     elif llm_arg == 'ollama':
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
+        ollama_model = custom_model or os.getenv("OLLAMA_MODEL", "llama3")
         ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/api/generate")
         llm = Ollama(ollama_model, ollama_base_url, system_prompt)
     else:
-        raise ValueError(f"Invalid LLM argument: {llm_arg}\nValid options are: claude, gpt, ollama")
+        raise ValueError(f"Invalid LLM argument: {llm_arg}\nValid options are: gemini, claude, gpt, ollama")
     return llm
+
 
 def print_readable(report: Response) -> None:
     for attr, value in vars(report).items():
-        print(f"{attr}:")
+        print(f"[bold cyan]{attr}:[/bold cyan]")
         if isinstance(value, str):
-            # For multiline strings, add indentation
             lines = value.split('\n')
             for line in lines:
                 print(f"  {line}")
         elif isinstance(value, list):
-            # For lists, print each item on a new line
             for item in value:
                 print(f"  - {item}")
         else:
-            # For other types, just print the value
             print(f"  {value}")
         print('-' * 40)
-        print()  # Add an empty line between attributes
+    print()
+
 
 def run():
-    parser = argparse.ArgumentParser(description='Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY/OPENAI_API_KEY before running.')
+    parser = argparse.ArgumentParser(
+        description='VulnHuntr v2.0: AI-powered static code analysis tracing tainted user-input call chains.'
+    )
     parser.add_argument('-r', '--root', type=str, required=True, help='Path to the root directory of the project')
     parser.add_argument('-a', '--analyze', type=str, help='Specific path or file within the project to analyze')
-    parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt', 'ollama'], default='claude', help='LLM client to use (default: claude)')
+    parser.add_argument('-l', '--llm', type=str, choices=['gemini', 'claude', 'gpt', 'ollama'], default='claude', help='LLM provider to use (default: claude)')
+    parser.add_argument('-m', '--model', type=str, help='Custom model identifier (e.g. gemini-2.5-pro, claude-3-7-sonnet-latest, gpt-4o)')
+    parser.add_argument('-o', '--output', type=str, help='Output path to save report file')
+    parser.add_argument('-f', '--format', type=str, choices=['terminal', 'json', 'sarif', 'html'], default='terminal', help='Output format (default: terminal)')
+    parser.add_argument('--max-iterations', type=int, default=7, help='Maximum context retrieval iterations (default: 7)')
     parser.add_argument('-v', '--verbosity', action='count', default=0, help='Increase output verbosity (-v for INFO, -vv for DEBUG)')
     args = parser.parse_args()
 
     repo = RepoOps(args.root)
     code_extractor = SymbolExtractor(args.root)
-    # Get repo files that don't include stuff like tests and documentation
     files = repo.get_relevant_py_files()
 
-    # User specified --analyze flag
     if args.analyze:
-        # Determine the path to analyze
         analyze_path = Path(args.analyze)
-
-        # If the path is absolute, use it as is, otherwise join it with the root path so user can specify relative paths
         if analyze_path.is_absolute():
             files_to_analyze = repo.get_files_to_analyze(analyze_path)
         else:
             files_to_analyze = repo.get_files_to_analyze(Path(args.root) / analyze_path)
-
-    # Analyze the entire project for network-related files
     else:
-        files_to_analyze = repo.get_network_related_files(files)
-    
-    llm = initialize_llm(args.llm)
+        files_to_analyze = list(repo.get_network_related_files(files))
 
+    files_to_analyze = list(files_to_analyze)
+    print(f"[bold green]VulnHuntr v2.0[/bold green] | Root: {args.root} | Files identified: {len(files_to_analyze)} | Provider: {args.llm}")
+
+    llm = initialize_llm(args.llm, custom_model=args.model)
     readme_content = repo.get_readme_content()
+
     if readme_content:
         log.info("Summarizing project README")
-        summary = llm.chat(
-            (ReadmeContent(content=readme_content).to_xml() + b'\n' +
-            Instructions(instructions=README_SUMMARY_PROMPT_TEMPLATE).to_xml()
+        summary_res = llm.chat(
+            (ReadmeContent(content=readme_content[:15000]).to_xml() + b'\n' +
+             Instructions(instructions=README_SUMMARY_PROMPT_TEMPLATE).to_xml()
             ).decode()
         )
-        summary = extract_between_tags("summary", summary)[0]
+        tags = extract_between_tags("summary", str(summary_res))
+        summary = tags[0] if tags else str(summary_res)
         log.info("README summary complete", summary=summary)
     else:
-        log.warning("No README summary found")
+        log.warning("No README found")
         summary = ''
-    
-    # Initialize the system prompt with the README summary
-    system_prompt = (Instructions(instructions=SYS_PROMPT_TEMPLATE).to_xml() + b'\n' +
-                ReadmeSummary(readme_summary=summary).to_xml()
-                ).decode()
-    
-    llm = initialize_llm(args.llm, system_prompt)
 
-    # files_to_analyze is either a list of all network-related files or a list containing a single file/dir to analyze
+    system_prompt = (
+        Instructions(instructions=SYS_PROMPT_TEMPLATE).to_xml() + b'\n' +
+        ReadmeSummary(readme_summary=summary).to_xml()
+    ).decode()
+
+    llm = initialize_llm(args.llm, system_prompt=system_prompt, custom_model=args.model)
+
+    all_findings: List[Dict[str, Any]] = []
+
     for py_f in files_to_analyze:
-        log.info(f"Performing initial analysis", file=str(py_f))
+        log.info("Performing initial analysis", file=str(py_f))
+        try:
+            with py_f.open(encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except Exception as e:
+            log.warning(f"Could not read file {py_f}: {e}")
+            continue
 
-        # This is the Initial analysis
-        with py_f.open(encoding='utf-8') as f:
-            content = f.read()
-            if not len(content):
-                continue
+        if not len(content.strip()):
+            continue
 
-            print(f"\nAnalyzing {py_f}")
-            print('-' * 40 +'\n')
+        print(f"\n[bold yellow]Auditing:[/bold yellow] {py_f}")
+        print('-' * 50)
 
-            user_prompt =(
-                    FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
-                    Instructions(instructions=INITIAL_ANALYSIS_PROMPT_TEMPLATE).to_xml() + b'\n' +
-                    AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
-                    PreviousAnalysis(previous_analysis='').to_xml() + b'\n' +
-                    Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                    ResponseFormat(response_format=json.dumps(Response.model_json_schema(), indent=4
-                    )
-                ).to_xml()
-            ).decode()
+        user_prompt = (
+            FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
+            Instructions(instructions=INITIAL_ANALYSIS_PROMPT_TEMPLATE).to_xml() + b'\n' +
+            AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
+            PreviousAnalysis(previous_analysis='').to_xml() + b'\n' +
+            Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
+            ResponseFormat(response_format=json.dumps(Response.model_json_schema(), indent=4)).to_xml()
+        ).decode()
 
+        try:
             initial_analysis_report: Response = llm.chat(user_prompt, response_model=Response)
-            log.info("Initial analysis complete", report=initial_analysis_report.model_dump())
+        except Exception as e:
+            log.error(f"Error during initial analysis of {py_f}: {e}")
+            continue
 
-            print_readable(initial_analysis_report)
+        log.info("Initial analysis complete", report=initial_analysis_report.model_dump())
+        print_readable(initial_analysis_report)
 
-            # Secondary analysis
-            if initial_analysis_report.confidence_score > 0 and len(initial_analysis_report.vulnerability_types):
+        # Secondary iterative taint-chain analysis
+        if initial_analysis_report.confidence_score > 0 and len(initial_analysis_report.vulnerability_types):
+            for vuln_type in initial_analysis_report.vulnerability_types:
+                vuln_key = vuln_type.value if hasattr(vuln_type, "value") else str(vuln_type)
+                vuln_data = VULN_SPECIFIC_BYPASSES_AND_PROMPTS.get(vuln_key, {})
+                stored_code_definitions = {}
+                definitions = CodeDefinitions(definitions=[])
+                same_context = False
+                previous_analysis = ''
+                previous_context_amount = 0
+                secondary_analysis_report = initial_analysis_report
 
-                for vuln_type in initial_analysis_report.vulnerability_types:
+                for i in range(args.max_iterations):
+                    log.info("Performing vuln-specific analysis", iteration=i, vuln_type=vuln_key, file=str(py_f))
 
-                    # Do not fetch the context code on the first pass of the secondary analysis because the context will be from the general analysis
-                    stored_code_definitions = {}
-                    definitions = CodeDefinitions(definitions=[])
-                    same_context = False
+                    if i > 0:
+                        previous_context_amount = len(stored_code_definitions)
+                        previous_analysis = secondary_analysis_report.analysis
 
-                    # Don't include the initial analysis or the first iteration of the secondary analysis in the user_prompt
-                    previous_analysis = ''
-                    previous_context_amount = 0
+                        for context_item in secondary_analysis_report.context_code:
+                            if context_item.name not in stored_code_definitions:
+                                match = code_extractor.extract(context_item.name, context_item.code_line, files)
+                                if match:
+                                    stored_code_definitions[context_item.name] = CodeDefinition(
+                                        name=match['name'],
+                                        context_name_requested=match['context_name_requested'],
+                                        file_path=match['file_path'],
+                                        source=match['source']
+                                    )
 
-                    for i in range(7):
-                        log.info(f"Performing vuln-specific analysis", iteration=i, vuln_type=vuln_type, file=py_f)
+                        definitions = CodeDefinitions(definitions=list(stored_code_definitions.values()))
 
-                        # Only lookup context code and previous analysis on second pass and onwards
-                        if i > 0:
-                            previous_context_amount = len(stored_code_definitions)
-                            previous_analysis = secondary_analysis_report.analysis
+                    bypasses_str = '\n'.join(vuln_data.get('bypasses', []))
+                    prompt_str = vuln_data.get('prompt', f"Analyze the call chain for {vuln_key} vulnerabilities.")
 
-                            for context_item in secondary_analysis_report.context_code:
-                                # Make sure bot isn't requesting the same code multiple times
-                                if context_item.name not in stored_code_definitions:
-                                    name = context_item.name
-                                    code_line = context_item.code_line
-                                    match = code_extractor.extract(name, code_line, files)
-                                    if match:
-                                        stored_code_definitions[name] = match
+                    vuln_specific_user_prompt = (
+                        FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
+                        definitions.to_xml() + b'\n' +
+                        ExampleBypasses(example_bypasses=bypasses_str).to_xml() + b'\n' +
+                        Instructions(instructions=prompt_str).to_xml() + b'\n' +
+                        AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
+                        PreviousAnalysis(previous_analysis=previous_analysis).to_xml() + b'\n' +
+                        Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
+                        ResponseFormat(response_format=json.dumps(Response.model_json_schema(), indent=4)).to_xml()
+                    ).decode()
 
-                            code_definitions = list(stored_code_definitions.values())
-                            definitions = CodeDefinitions(definitions=code_definitions)
-                            
-                            if args.verbosity > 1:
-                                for definition in definitions.definitions:
-                                    if '\n' in definition.source:
-                                        lines = definition.source.split('\n')
-                                        snippet = lines[0] + '\n' + lines[1]
-                                    else:
-                                        snippet = definition.source[:75]
-                                    
-                                    print(f"Name: {definition.name}")
-                                    print(f"Context search: {definition.context_name_requested}")
-                                    print(f"File Path: {definition.file_path}")
-                                    print(f"First two lines from source: {snippet}\n")
+                    try:
+                        secondary_analysis_report = llm.chat(vuln_specific_user_prompt, response_model=Response)
+                    except Exception as e:
+                        log.error(f"Error during secondary analysis: {e}")
+                        break
 
-                        vuln_specific_user_prompt = (
-                            FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
-                            definitions.to_xml() + b'\n' +  # These are all the requested context functions and classes
-                            ExampleBypasses(
-                                example_bypasses='\n'.join(VULN_SPECIFIC_BYPASSES_AND_PROMPTS[vuln_type]['bypasses'])
-                            ).to_xml() + b'\n' +
-                            Instructions(instructions=VULN_SPECIFIC_BYPASSES_AND_PROMPTS[vuln_type]['prompt']).to_xml() + b'\n' +
-                            AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
-                            PreviousAnalysis(previous_analysis=previous_analysis).to_xml() + b'\n' +
-                            Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                            ResponseFormat(
-                                response_format=json.dumps(
-                                    Response.model_json_schema(), indent=4
-                                )
-                            ).to_xml()
-                        ).decode()
+                    log.info("Secondary analysis iteration finished", report=secondary_analysis_report.model_dump())
 
-                        secondary_analysis_report: Response = llm.chat(vuln_specific_user_prompt, response_model=Response)
-                        log.info("Secondary analysis complete", secondary_analysis_report=secondary_analysis_report.model_dump())
+                    if args.verbosity > 0:
+                        print_readable(secondary_analysis_report)
 
-                        if args.verbosity > 0:
-                            print_readable(secondary_analysis_report)
+                    if not len(secondary_analysis_report.context_code):
+                        break
 
-                        if not len(secondary_analysis_report.context_code):
-                            log.debug("No new context functions or classes found")
-                            if args.verbosity == 0:
-                                print_readable(secondary_analysis_report)
+                    if previous_context_amount >= len(stored_code_definitions) and i > 0:
+                        if same_context:
                             break
-                        
-                        # Check if any new context code is requested
-                        if previous_context_amount >= len(stored_code_definitions) and i > 0:
-                            # Let it request the same context once, then on the second time it requests the same context, break
-                            if same_context:
-                                log.debug("No new context functions or classes requested")
-                                if args.verbosity == 0:
-                                    print_readable(secondary_analysis_report)
-                                break
-                            same_context = True
-                            log.debug("No new context functions or classes requested")
-                    pass
+                        same_context = True
+
+                if secondary_analysis_report.confidence_score >= 5:
+                    all_findings.append({
+                        "file_path": str(py_f),
+                        "report": secondary_analysis_report.model_dump()
+                    })
+                    if args.verbosity == 0:
+                        print_readable(secondary_analysis_report)
+
+    # Print summary table
+    table = Table(title="VulnHuntr v2.0 Scan Summary")
+    table.add_column("File", style="cyan")
+    table.add_column("Vulnerability Types", style="magenta")
+    table.add_column("Confidence", justify="right", style="green")
+    table.add_column("PoC", style="yellow")
+
+    for f in all_findings:
+        rep = f["report"]
+        table.add_row(
+            f["file_path"],
+            ", ".join([str(t) for t in rep.get("vulnerability_types", [])]),
+            f"{rep.get('confidence_score', 0)}/10",
+            rep.get("poc", "None")[:40] + ("..." if len(rep.get("poc", "None")) > 40 else "")
+        )
+
+    console.print(table)
+
+    summary_stats = {
+        "files_scanned": len(files_to_analyze),
+        "total_findings": len(all_findings),
+        "llm_usage": getattr(llm, "usage", None).summary() if hasattr(llm, "usage") else {}
+    }
+
+    # Handle Exports
+    if args.output or args.format != 'terminal':
+        fmt = args.format
+        out_path = Path(args.output) if args.output else Path(f"vulnhuntr-report.{fmt if fmt != 'terminal' else 'json'}")
+
+        if fmt == 'sarif':
+            sarif_data = generate_sarif(all_findings, repo_root=args.root)
+            out_path.write_text(json.dumps(sarif_data, indent=2), encoding='utf-8')
+            print(f"[bold green]Exported SARIF report to:[/bold green] {out_path}")
+        elif fmt == 'html':
+            html_data = generate_html_report(all_findings, summary_stats)
+            out_path.write_text(html_data, encoding='utf-8')
+            print(f"[bold green]Exported HTML report to:[/bold green] {out_path}")
+        elif fmt == 'json':
+            out_path.write_text(json.dumps({"findings": all_findings, "stats": summary_stats}, indent=2), encoding='utf-8')
+            print(f"[bold green]Exported JSON report to:[/bold green] {out_path}")
+
 
 if __name__ == '__main__':
     run()

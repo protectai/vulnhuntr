@@ -1,23 +1,25 @@
 [tool.poetry]
 name = "vulnhuntr"
-version = "0.1.0"
-description = ""
-authors = ["Dan <dan@protectai.com>", "Marcello <marcello@protectai.com>"]
+version = "0.2.0"
+description = "Next-Gen AI static vulnerability analyzer tracing tainted user input across call chains."
+authors = ["Kartavya", "Dan <dan@protectai.com>", "Marcello <marcello@protectai.com>"]
 readme = "README.md"
+license = "AGPL-3.0-or-later"
 
 [tool.poetry.scripts]
 vulnhuntr = 'vulnhuntr.__main__:run'
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10"
 rich = "^13.7.1"
 pydantic-xml = "^2.11.0"
 pydantic = "^2.8.0"
-anthropic = "^0.30.1"
+anthropic = "^0.40.0"
 structlog = "^24.2.0"
-jedi = "0.18.0"
-parso = "0.8.0"
-openai = "^1.51.2"
+jedi = ">=0.19.0"
+parso = ">=0.8.4"
+openai = "^1.55.0"
+google-genai = "^2.0.0"
 python-dotenv = "^1.0.0"
 
 [build-system]
