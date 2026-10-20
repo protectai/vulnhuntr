@@ -3,6 +3,7 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -201,6 +202,26 @@ class DocumentationCLITests(unittest.TestCase):
         self.assertEqual(len(server.calls), 1)
         self.assertEqual(scripted.symbol_calls[0].args[0], "helper")
         self.assertIn("def helper(url):", scripted.prompts[2])
+        self.assertIn("https://docs.example.org/api#redirects", scripted.prompts[2])
+
+    @unittest.skipUnless(sys.version_info[:2] == (3, 10), "Inherited Jedi/Parso requires Python 3.10")
+    def test_real_local_symbol_resolver_and_documentation_reach_next_analysis(self):
+        """Use actual Jedi lookup on the repository's documented interpreter."""
+        context = [{
+            "name": "helper",
+            "reason": "Trace the local URL transformation.",
+            "code_line": "return helper(request.args.get('url'))",
+        }]
+        scripted, server, _ = self.run_cli([
+            report("requests_redirects"),
+            report("urllib_urljoin", context_code=context),
+            report(),
+        ])
+        self.assertEqual(len(server.calls), 2)
+        self.assertEqual(scripted.symbol_calls, [])
+        self.assertIn("def helper(url):", scripted.prompts[2])
+        self.assertIn("requests_redirects", scripted.prompts[2])
+        self.assertIn("urllib_urljoin", scripted.prompts[2])
         self.assertIn("https://docs.example.org/api#redirects", scripted.prompts[2])
 
     def test_new_documentation_is_consumed_when_local_context_stops_growing(self):
