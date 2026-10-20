@@ -90,6 +90,30 @@ class DocumentationCLITests(unittest.TestCase):
             server.calls[1]["arguments"]["session_id"],
         )
 
+    def test_zero_confidence_documentation_request_reaches_next_analysis(self):
+        initial = report("requests_redirects")
+        initial["confidence_score"] = 0
+        scripted, server, _ = self.run_cli([initial, report()])
+        self.assertEqual(len(server.calls), 1)
+        self.assertEqual(len(scripted.prompts), 2)
+        self.assertIn("https://docs.example.org/api#redirects", scripted.prompts[1])
+
+    def test_zero_confidence_without_supported_documentation_still_stops(self):
+        for topics in ((), ("unsupported_topic",)):
+            with self.subTest(topics=topics):
+                initial = report(*topics)
+                initial["confidence_score"] = 0
+                scripted, server, _ = self.run_cli([initial])
+                self.assertEqual(len(scripted.prompts), 1)
+                self.assertEqual(server.requests, [])
+
+    def test_zero_confidence_documentation_does_not_override_disabled_search(self):
+        initial = report("requests_redirects")
+        initial["confidence_score"] = 0
+        scripted, server, _ = self.run_cli([initial], arguments=("--web-search", "off"))
+        self.assertEqual(len(scripted.prompts), 1)
+        self.assertEqual(server.requests, [])
+
     def test_saved_off_and_explicit_off_disable_network(self):
         cases = [
             ((), {"VULNHUNTR_WEB_SEARCH": "off"}),

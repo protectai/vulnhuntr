@@ -406,10 +406,12 @@ def run():
             print_readable(initial_analysis_report)
 
             # Secondary analysis
-            if initial_analysis_report.confidence_score > 0 and len(initial_analysis_report.vulnerability_types):
-                # One research identity and budget per file, shared by its
-                # vulnerability-specific passes, independent of the LLM client.
-                documentation = DocumentationSearch(enabled=args.web_search == 'parallel')
+            # One research identity and budget per file, shared by its
+            # vulnerability-specific passes, independent of the LLM client.
+            documentation = DocumentationSearch(enabled=args.web_search == 'parallel')
+            if (len(initial_analysis_report.vulnerability_types) and
+                    (initial_analysis_report.confidence_score > 0 or
+                     documentation.can_collect(initial_analysis_report.documentation_requests))):
 
                 for vuln_type in initial_analysis_report.vulnerability_types:
 
