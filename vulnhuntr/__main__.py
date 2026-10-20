@@ -4,6 +4,7 @@ import argparse
 import structlog
 from vulnhuntr.symbol_finder import SymbolExtractor
 from vulnhuntr.LLMs import Claude, ChatGPT, Ollama
+from vulnhuntr.documentation_search import DocumentationSearch, documentation_instructions
 from vulnhuntr.prompts import *
 from rich import print
 from typing import List, Generator
@@ -51,6 +52,10 @@ class Response(BaseModel):
     confidence_score: int = Field(description="0-10, where 0 is no confidence and 10 is absolute certainty because you have the entire user input to server output code path.")
     vulnerability_types: List[VulnType] = Field(description="The types of identified vulnerabilities")
     context_code: List[ContextCode] = Field(description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
+    documentation_requests: List[str] = Field(default_factory=list, description="Public API documentation topic IDs requested to clarify security behavior. Use only the offered topics; include a vulnerability type when requesting documentation.")
+
+class PublicDocumentation(BaseXmlModel, tag="public_documentation"):
+    content: str
 
 class ReadmeContent(BaseXmlModel, tag="readme_content"):
     content: str
@@ -323,7 +328,10 @@ def run():
     parser.add_argument('-a', '--analyze', type=str, help='Specific path or file within the project to analyze')
     parser.add_argument('-l', '--llm', type=str, choices=['claude', 'gpt', 'ollama'], default='claude', help='LLM client to use (default: claude)')
     parser.add_argument('-v', '--verbosity', action='count', default=0, help='Increase output verbosity (-v for INFO, -vv for DEBUG)')
+    parser.add_argument('--web-search', choices=['parallel', 'off'], default=os.getenv('VULNHUNTR_WEB_SEARCH', 'parallel'), help='Public API documentation search (default: VULNHUNTR_WEB_SEARCH or parallel; off disables all documentation requests)')
     args = parser.parse_args()
+    if args.web_search not in ('parallel', 'off'):
+        parser.error('VULNHUNTR_WEB_SEARCH must be parallel or off')
 
     repo = RepoOps(args.root)
     code_extractor = SymbolExtractor(args.root)
@@ -362,7 +370,7 @@ def run():
         summary = ''
     
     # Initialize the system prompt with the README summary
-    system_prompt = (Instructions(instructions=SYS_PROMPT_TEMPLATE).to_xml() + b'\n' +
+    system_prompt = (Instructions(instructions=SYS_PROMPT_TEMPLATE + '\n' + documentation_instructions(args.web_search == 'parallel')).to_xml() + b'\n' +
                 ReadmeSummary(readme_summary=summary).to_xml()
                 ).decode()
     
@@ -399,6 +407,9 @@ def run():
 
             # Secondary analysis
             if initial_analysis_report.confidence_score > 0 and len(initial_analysis_report.vulnerability_types):
+                # One research identity and budget per file, shared by its
+                # vulnerability-specific passes, independent of the LLM client.
+                documentation = DocumentationSearch(enabled=args.web_search == 'parallel')
 
                 for vuln_type in initial_analysis_report.vulnerability_types:
 
@@ -410,9 +421,11 @@ def run():
                     # Don't include the initial analysis or the first iteration of the secondary analysis in the user_prompt
                     previous_analysis = ''
                     previous_context_amount = 0
+                    pending_documentation = initial_analysis_report.documentation_requests
 
                     for i in range(7):
                         log.info(f"Performing vuln-specific analysis", iteration=i, vuln_type=vuln_type, file=py_f)
+                        documentation_changed = documentation.collect(pending_documentation)
 
                         # Only lookup context code and previous analysis on second pass and onwards
                         if i > 0:
@@ -447,6 +460,7 @@ def run():
                         vuln_specific_user_prompt = (
                             FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
                             definitions.to_xml() + b'\n' +  # These are all the requested context functions and classes
+                            PublicDocumentation(content=documentation.render()).to_xml() + b'\n' +
                             ExampleBypasses(
                                 example_bypasses='\n'.join(VULN_SPECIFIC_BYPASSES_AND_PROMPTS[vuln_type]['bypasses'])
                             ).to_xml() + b'\n' +
@@ -462,19 +476,21 @@ def run():
                         ).decode()
 
                         secondary_analysis_report: Response = llm.chat(vuln_specific_user_prompt, response_model=Response)
+                        pending_documentation = secondary_analysis_report.documentation_requests
                         log.info("Secondary analysis complete", secondary_analysis_report=secondary_analysis_report.model_dump())
 
                         if args.verbosity > 0:
                             print_readable(secondary_analysis_report)
 
-                        if not len(secondary_analysis_report.context_code):
+                        if not len(secondary_analysis_report.context_code) and not documentation.can_collect(pending_documentation):
                             log.debug("No new context functions or classes found")
                             if args.verbosity == 0:
                                 print_readable(secondary_analysis_report)
                             break
                         
                         # Check if any new context code is requested
-                        if previous_context_amount >= len(stored_code_definitions) and i > 0:
+                        if (previous_context_amount >= len(stored_code_definitions) and i > 0
+                                and not documentation_changed and not documentation.can_collect(pending_documentation)):
                             # Let it request the same context once, then on the second time it requests the same context, break
                             if same_context:
                                 log.debug("No new context functions or classes requested")

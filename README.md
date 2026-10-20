@@ -134,6 +134,37 @@ vulnhuntr -r /path/to/target/repo/ -a server.py -l ollama
 - It continues doing this until the entire call chain from user input to server processing is complete then gives a final analysis
 - The final analysis consists of it's reasoning, a proof of concept exploit, and a confidence score
 
+### Public API documentation
+
+Vulnhuntr can check public API behavior during vulnerability analysis with
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp).
+Search is enabled by default and uses Fast mode without a Parallel account or API
+key. When the model requests a documentation topic, source URLs and excerpts are
+included in its next analysis pass. The supported topics cover Requests redirects,
+`urllib.parse`, HTML escaping, PyYAML loading, Flask file serving, Werkzeug path
+helpers and Jinja autoescaping.
+
+Only fixed public documentation queries are sent to `https://search.parallel.ai/mcp`.
+Source code, project names, internal paths and free-form model text are never used
+as search queries. Each analyzed file has a separate research identity and a budget
+of three distinct lookups, including failed requests. No lookup runs unless the
+model requests a supported topic. Results are cached for the remaining passes on
+that file. Requests time out after 20 seconds; unavailable documentation is marked
+as such and analysis continues with local evidence. Free anonymous access has
+rate limits.
+
+To disable documentation search, including for fully local Ollama use:
+
+```bash
+vulnhuntr -r /path/to/target/repo/ --web-search off
+```
+
+Set `VULNHUNTR_WEB_SEARCH=off` in the environment or `.env` to save that choice.
+`--web-search parallel` overrides it for a run. These settings do not change the
+selected LLM or its credentials. Public documentation supplements local source
+lookup; it may describe a different package version and does not establish that
+a vulnerability exists in the analyzed call chain.
+
 >[!TIP]
 > Generally confidence scores < 7 mean there's unlikely a vulnerability. Confidence scores of 7 mean it should be investigated, and confidence scores of 8+ mean it is very likely to be a valid vulnerability.
 
